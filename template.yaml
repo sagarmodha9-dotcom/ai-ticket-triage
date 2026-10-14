@@ -1,0 +1,123 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  AI Support Ticket Triage - API Gateway + Lambda + Amazon Bedrock + DynamoDB + S3 + SNS.
+  A ticket comes in, AI sets priority and category and drafts a reply, P1s alert by email.
+
+Parameters:
+  ModelId:
+    Type: String
+    Description: >
+      Bedrock model or inference profile ID. Check Bedrock console > Model catalog for the
+      exact ID available in your Region, and make sure model access is enabled.
+    Default: us.anthropic.claude-haiku-4-5-20251001-v1:0
+  AlertEmail:
+    Type: String
+    Description: Email address that receives P1 alerts (you must confirm the subscription email).
+
+Globals:
+  Function:
+    Runtime: python3.12
+    CodeUri: src/
+    MemorySize: 256
+    Timeout: 30
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref TicketsTable
+
+Resources:
+  # Stores every ticket and its AI triage result. On-demand = pay per request, no idle cost.
+  TicketsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: ticket_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: ticket_id
+          KeyType: HASH
+      SSESpecification:
+        SSEEnabled: true
+
+  # Holds the help desk articles (knowledge base) the AI uses to write replies.
+  KnowledgeBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # Emails the on-call person when a P1 ticket comes in.
+  P1AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref AlertEmail
+
+  # The public HTTPS front door. Throttling caps requests so nobody can run up a Bedrock bill.
+  TriageApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 5
+        ThrottlingRateLimit: 2
+
+  CreateTicketFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.create_ticket
+      Environment:
+        Variables:
+          MODEL_ID: !Ref ModelId
+          KB_BUCKET: !Ref KnowledgeBucket
+          KB_PREFIX: kb/
+          ALERT_TOPIC_ARN: !Ref P1AlertTopic
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TicketsTable
+        - S3ReadPolicy:
+            BucketName: !Ref KnowledgeBucket
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt P1AlertTopic.TopicName
+        - Statement:
+            - Effect: Allow
+              Action: bedrock:InvokeModel
+              Resource:
+                - arn:aws:bedrock:*::foundation-model/*
+                - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*
+      Events:
+        CreateTicket:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref TriageApi
+            Path: /tickets
+            Method: POST
+
+  GetTicketFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.get_ticket
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref TicketsTable
+      Events:
+        GetTicket:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref TriageApi
+            Path: /tickets/{ticket_id}
+            Method: GET
+
+Outputs:
+  ApiUrl:
+    Description: Base URL of the API
+    Value: !Sub https://${TriageApi}.execute-api.${AWS::Region}.amazonaws.com
+  KnowledgeBucketName:
+    Description: Upload knowledge base articles here under kb/
+    Value: !Ref KnowledgeBucket
+  TicketsTableName:
+    Value: !Ref TicketsTable

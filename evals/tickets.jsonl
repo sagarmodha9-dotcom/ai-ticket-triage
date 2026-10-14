@@ -1,0 +1,12 @@
+{"subject": "Locked out of my account", "description": "I typed my password wrong too many times and now it says my account is locked.", "expected_priority": "P2", "expected_category": "account_access"}
+{"subject": "New phone, no MFA codes", "description": "I got a new iPhone and my authenticator app is empty so I can't sign in.", "expected_priority": "P2", "expected_category": "account_access"}
+{"subject": "VPN won't connect", "description": "Working from home today and the VPN keeps failing to connect, can't reach anything internal.", "expected_priority": "P2", "expected_category": "network"}
+{"subject": "Whole office has no internet", "description": "Nobody on the 3rd floor can get online, everyone is down since 9am.", "expected_priority": "P1", "expected_category": "network"}
+{"subject": "Clicked a weird link", "description": "I clicked a link in an email that looked like it was from IT and entered my password. Now I think it was phishing.", "expected_priority": "P1", "expected_category": "security"}
+{"subject": "Ransom message on screen", "description": "My files have strange extensions and there is a note asking for bitcoin.", "expected_priority": "P1", "expected_category": "security"}
+{"subject": "Outlook not syncing", "description": "Outlook hasn't received new email since this morning but the web version works.", "expected_priority": "P3", "expected_category": "email_collaboration"}
+{"subject": "Can't see shared mailbox", "description": "My manager gave me access to the billing mailbox but it doesn't show in Outlook.", "expected_priority": "P3", "expected_category": "email_collaboration"}
+{"subject": "Printer jam", "description": "The printer on floor 2 says paper jam and my job is stuck in the queue.", "expected_priority": "P3", "expected_category": "hardware"}
+{"subject": "Laptop super slow", "description": "My laptop takes 10 minutes to boot and freezes when I open Excel.", "expected_priority": "P3", "expected_category": "hardware"}
+{"subject": "Need Adobe Acrobat", "description": "Can I get Adobe Acrobat Pro installed? I need to edit PDFs for contracts.", "expected_priority": "P4", "expected_category": "software_request"}
+{"subject": "Access to finance share", "description": "Please give me read access to the Finance shared folder, my manager approved it.", "expected_priority": "P4", "expected_category": "software_request"}
