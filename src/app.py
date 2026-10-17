@@ -12,7 +12,7 @@ import uuid
 from decimal import Decimal
 
 from knowledge import KnowledgeBase, load_from_dir, load_from_s3
-from llm import BedrockLLM
+from llm import build_llm
 from redact import redact
 from triage import triage_ticket
 
@@ -34,7 +34,14 @@ def _get(name):
         elif name == "sns":
             _clients[name] = boto3.client("sns")
         elif name == "llm":
-            _clients[name] = BedrockLLM(os.environ["MODEL_ID"])
+            provider = os.environ.get("LLM_PROVIDER", "bedrock")
+            api_key = ""
+            if provider != "bedrock":
+                # The key lives encrypted in SSM Parameter Store, never in code or env vars.
+                api_key = boto3.client("ssm").get_parameter(
+                    Name=os.environ["ANTHROPIC_KEY_PARAM"], WithDecryption=True)["Parameter"]["Value"]
+            _clients[name] = build_llm(provider, os.environ.get("MODEL_ID", ""),
+                                       os.environ.get("ANTHROPIC_MODEL_ID", ""), api_key)
         elif name == "kb":
             local_dir = os.environ.get("KB_LOCAL_DIR")
             if local_dir:
@@ -90,8 +97,11 @@ def create_ticket(event, context):
     redacted = {k: c1.get(k, 0) + c2.get(k, 0) for k in set(c1) | set(c2)}
 
     started = time.time()
+    model_provider = "none"
     try:
-        result = triage_ticket(clean_subject, clean_description, _get("llm"), _get("kb"))
+        llm = _get("llm")
+        result = triage_ticket(clean_subject, clean_description, llm, _get("kb"))
+        model_provider = getattr(llm, "provider", "unknown")
     except Exception:
         # If the AI call fails (throttling, outage), still save the ticket for a human.
         logger.exception("Triage failed for %s", ticket_id)
@@ -111,6 +121,7 @@ def create_ticket(event, context):
         "requester": requester,
         "status": "open",
         "redacted_counts": redacted,
+        "model_provider": model_provider,
         **result,
         "confidence": Decimal(str(result["confidence"])),
     }
@@ -127,6 +138,7 @@ def create_ticket(event, context):
     logger.info(json.dumps({"event": "ticket_triaged", "ticket_id": ticket_id,
                             "priority": result["priority"], "category": result["category"],
                             "needs_human_review": result["needs_human_review"],
+                            "model_provider": model_provider,
                             "latency_ms": latency_ms, "redacted": redacted}))
     return _response(201, {k: v for k, v in item.items() if k != "description"})
 

@@ -55,7 +55,7 @@ curl -X POST "$API_URL/tickets" -H "Content-Type: application/json" -d '{
 | `src/triage.py` | Prompt, output validation, guardrails |
 | `src/knowledge.py` | Loads articles from S3 and searches them (TF-IDF) |
 | `src/redact.py` | Removes personal data before the AI call |
-| `src/llm.py` | Bedrock Converse API client, plus a fake model for tests |
+| `src/llm.py` | Bedrock Converse API client, Anthropic API client, provider failover, and a fake model for tests |
 | `knowledge_base/` | Sample IT help desk articles |
 | `tests/` | 21 unit tests (no AWS needed) |
 | `evals/` | 12 tickets with known answers to measure accuracy |
@@ -86,7 +86,14 @@ Prerequisites: AWS account, [AWS CLI](https://aws.amazon.com/cli/) and [AWS SAM 
    ./scripts/upload_kb.sh <KnowledgeBucketName>
    ```
 5. Test with the `curl` example above using the `ApiUrl` output.
-6. Measure real accuracy: `python evals/run_evals.py --bedrock <MODEL_ID>`
+6. Measure real accuracy: `python evals/run_evals.py --bedrock <MODEL_ID>` (or `--anthropic claude-haiku-4-5` with `ANTHROPIC_API_KEY` set)
+
+**Optional: Anthropic API failover.** New AWS accounts can start with very low Bedrock quotas. To fail over to the Anthropic API, store your key once (it's read silently, so it never lands in your shell history):
+
+```bash
+read -s ANTHROPIC_KEY && aws ssm put-parameter --name /ai-ticket-triage/anthropic-api-key \
+  --type SecureString --value "$ANTHROPIC_KEY" --region us-east-1 && unset ANTHROPIC_KEY
+```
 
 **Clean up** when finished: `aws s3 rm s3://<KnowledgeBucketName> --recursive && sam delete`
 
@@ -98,7 +105,8 @@ Prerequisites: AWS account, [AWS CLI](https://aws.amazon.com/cli/) and [AWS SAM 
 - **PII redaction before the AI call:** private data stays inside the system.
 - **Least-privilege IAM:** each function only gets the permissions it needs (the read-only function can't write).
 - **API throttling:** caps requests so nobody can run up a Bedrock bill.
-- **Fail-safe:** if Bedrock is down or throttled, the ticket is still saved and flagged for a human.
+- **Provider failover:** by default the Lambda tries Claude on Bedrock first (one quick attempt, no long retry loop) and fails over to Claude through the Anthropic API if Bedrock is throttled or out of quota. Each ticket records which provider answered (`model_provider`). Set `LlmProvider` to `bedrock` or `anthropic` to use only one. The Anthropic API key is stored as an encrypted SecureString in SSM Parameter Store, and the Lambda role can read only that one parameter.
+- **Fail-safe:** if every model provider fails, the ticket is still saved and flagged for a human.
 
 ## Ideas for next steps
 

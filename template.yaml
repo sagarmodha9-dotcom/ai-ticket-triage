@@ -11,6 +11,21 @@ Parameters:
       Bedrock model or inference profile ID. Check Bedrock console > Model catalog for the
       exact ID available in your Region, and make sure model access is enabled.
     Default: us.anthropic.claude-haiku-4-5-20251001-v1:0
+  LlmProvider:
+    Type: String
+    Description: >
+      bedrock = Bedrock only. anthropic = Anthropic API only.
+      bedrock_with_anthropic_fallback = try Bedrock first, fail over to the Anthropic API.
+    Default: bedrock_with_anthropic_fallback
+    AllowedValues: [bedrock, anthropic, bedrock_with_anthropic_fallback]
+  AnthropicModelId:
+    Type: String
+    Description: Model used when calling the Anthropic API directly.
+    Default: claude-haiku-4-5
+  AnthropicKeyParam:
+    Type: String
+    Description: SSM Parameter Store name (SecureString) that holds the Anthropic API key.
+    Default: /ai-ticket-triage/anthropic-api-key
   AlertEmail:
     Type: String
     Description: Email address that receives P1 alerts (you must confirm the subscription email).
@@ -73,6 +88,9 @@ Resources:
       Environment:
         Variables:
           MODEL_ID: !Ref ModelId
+          LLM_PROVIDER: !Ref LlmProvider
+          ANTHROPIC_MODEL_ID: !Ref AnthropicModelId
+          ANTHROPIC_KEY_PARAM: !Ref AnthropicKeyParam
           KB_BUCKET: !Ref KnowledgeBucket
           KB_PREFIX: kb/
           ALERT_TOPIC_ARN: !Ref P1AlertTopic
@@ -89,6 +107,9 @@ Resources:
               Resource:
                 - arn:aws:bedrock:*::foundation-model/*
                 - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AnthropicKeyParam}
       Events:
         CreateTicket:
           Type: HttpApi

@@ -3,6 +3,7 @@
 Usage:
   python evals/run_evals.py                 # uses the fake model (no AWS needed)
   python evals/run_evals.py --bedrock MODEL_ID   # uses the real model in Amazon Bedrock
+  python evals/run_evals.py --anthropic claude-haiku-4-5   # uses Claude via the Anthropic API
 """
 import argparse
 import json
@@ -13,7 +14,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from knowledge import KnowledgeBase, load_from_dir  # noqa: E402
-from llm import BedrockLLM, FakeLLM  # noqa: E402
+from llm import AnthropicLLM, BedrockLLM, FakeLLM  # noqa: E402
 from redact import redact  # noqa: E402
 from triage import triage_ticket  # noqa: E402
 
@@ -21,9 +22,16 @@ from triage import triage_ticket  # noqa: E402
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--bedrock", metavar="MODEL_ID", help="call the real model in Bedrock")
+    parser.add_argument("--anthropic", metavar="MODEL_ID", help="call Claude via the Anthropic API (needs ANTHROPIC_API_KEY)")
     args = parser.parse_args()
 
-    llm = BedrockLLM(args.bedrock) if args.bedrock else FakeLLM()
+    if args.anthropic:
+        llm = AnthropicLLM(args.anthropic, os.environ.get("ANTHROPIC_API_KEY", ""))
+    elif args.bedrock:
+        llm = BedrockLLM(args.bedrock)
+    else:
+        llm = FakeLLM()
+
     kb = KnowledgeBase(load_from_dir(os.path.join(ROOT, "knowledge_base")))
 
     with open(os.path.join(ROOT, "evals", "tickets.jsonl")) as f:
