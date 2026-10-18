@@ -53,6 +53,8 @@ class BedrockLLM:
             messages=[{"role": "user", "content": [{"text": user}]}],
             inferenceConfig={"maxTokens": max_tokens, "temperature": 0},
         )
+        usage = response.get("usage", {})
+        self.last_usage = _usage(usage.get("inputTokens"), usage.get("outputTokens"))
         return response["output"]["message"]["content"][0]["text"]
 
     def chat(self, system: str, messages: list, tools: list, max_tokens: int = 800) -> dict:
@@ -132,6 +134,8 @@ class AnthropicLLM:
             "system": system,
             "messages": [{"role": "user", "content": user}],
         })
+        usage = data.get("usage", {})
+        self.last_usage = _usage(usage.get("input_tokens"), usage.get("output_tokens"))
         return "".join(block.get("text", "") for block in data["content"] if block.get("type") == "text")
 
     def chat(self, system: str, messages: list, tools: list, max_tokens: int = 800) -> dict:
@@ -185,6 +189,11 @@ class FallbackLLM:
     def provider(self):
         return self.last_provider or self.primary.provider
 
+    @property
+    def last_usage(self):
+        used = self.backup if self.last_provider == self.backup.provider else self.primary
+        return getattr(used, "last_usage", _usage())
+
     def _call(self, method: str, *args):
         try:
             result = getattr(self.primary, method)(*args)
@@ -225,6 +234,7 @@ class FakeLLM:
     UUID = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
 
     def complete(self, system: str, user: str, max_tokens: int = 800) -> str:
+        self.last_usage = _usage(len(system + user) // 4, 60)
         ticket = user.split("ARTICLES:")[0].lower()
         priority, category = "P3", "other"
         for keywords, p, c in self.RULES:

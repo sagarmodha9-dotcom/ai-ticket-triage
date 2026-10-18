@@ -126,7 +126,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs the tests and evals, builds the
 | `src/llm.py` | Bedrock Converse API and Anthropic API clients (text and tool use), provider failover, and a fake model for tests |
 | `knowledge_base/` | Sample IT help desk articles |
 | `tests/` | 46 unit tests (no AWS needed) |
-| `evals/` | 12 tickets with known answers (triage accuracy) and 8 agent scenarios (outage, phishing, prompt injection, notes...) |
+| `evals/` | 12 tickets with known answers (triage accuracy) and 12 agent scenarios (outages, phishing, MFA fatigue, direct and indirect prompt injection, notes...) compared against single-call triage |
 
 ## Run it locally (no AWS account needed)
 
@@ -155,7 +155,7 @@ Prerequisites: AWS account, [AWS CLI](https://aws.amazon.com/cli/) and [AWS SAM 
    ./scripts/upload_kb.sh <KnowledgeBucketName>
    ```
 5. Test with the `curl` example above using the `ApiUrl` output.
-6. Score the agent: `python evals/run_agent_evals.py --anthropic claude-haiku-4-5` (pass rate, tool calls, tokens, latency and cost per run)
+6. Score the agent: `python evals/run_agent_evals.py --anthropic claude-haiku-4-5 --runs 3` (pass rate and consistency, compared with single-call triage on the same scenarios, plus tool calls, tokens, latency and cost per run)
 7. Measure real accuracy: `python evals/run_evals.py --bedrock <MODEL_ID>` (or `--anthropic claude-haiku-4-5` with `ANTHROPIC_API_KEY` set)
 
 **Optional: Anthropic API failover.** New AWS accounts can start with very low Bedrock quotas. To fail over to the Anthropic API, store your key once (it's read silently, so it never lands in your shell history):
