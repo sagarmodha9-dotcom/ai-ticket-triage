@@ -8,6 +8,10 @@ A serverless help desk assistant on AWS. When a support ticket comes in, it:
 4. **Checks the AI's answer** with plain-code guardrails: valid values only, no made-up sources, security tickets always escalated, low-confidence answers flagged for a human
 5. **Saves the ticket** in DynamoDB and **emails an alert** through SNS when it's a P1
 
+It also has a **help desk agent** (`POST /agent`). A technician asks a question in plain English and Claude decides which tools to use, step by step: search the knowledge base, look up a ticket, find similar recent tickets, add a note, or escalate. For example, it spots an outage when several users report the same problem, escalates the newest ticket to P1, and alerts on-call.
+
+The whole API also runs in **Docker** with one command, no AWS account needed.
+
 ```
                  POST /tickets
  user/app ───────────────────────▶ API Gateway (HTTP API, throttled)
@@ -20,6 +24,11 @@ A serverless help desk assistant on AWS. When a support ticket comes in, it:
                     base search       (Claude)         (tickets)    (P1 only)
 
  GET /tickets/{id} ──▶ API Gateway ──▶ Lambda: get_ticket ──▶ DynamoDB
+
+ POST /agent ──▶ API Gateway ──▶ Lambda: agent ◀──▶ Claude (tool use loop, max 6 steps)
+                                      │
+                 tools: search_knowledge_base · get_ticket · search_recent_tickets
+                        add_ticket_note · escalate_ticket (P1 ──▶ SNS email)
 ```
 
 ## Example
@@ -46,18 +55,77 @@ curl -X POST "$API_URL/tickets" -H "Content-Type: application/json" -d '{
 }
 ```
 
+## Help desk agent
+
+```bash
+curl -X POST "$API_URL/agent" -H "Content-Type: application/json" \
+  -d '{"message": "Is there a VPN outage right now?"}'
+```
+
+```json
+{
+  "answer": "Three users reported VPN failures in the last hour, which looks like an outage. I escalated the newest ticket to P1 and on-call was alerted. Next step: check the VPN gateway, then follow vpn.md for affected users.",
+  "steps": [
+    {"step": 1, "tool": "search_recent_tickets", "input": {"keyword": "vpn", "hours": 24}, "ok": true},
+    {"step": 2, "tool": "search_knowledge_base", "input": {"query": "vpn connection failing"}, "ok": true},
+    {"step": 3, "tool": "escalate_ticket", "input": {"ticket_id": "3e34...", "priority": "P1", "reason": "Possible outage: 3 similar VPN tickets"}, "ok": true}
+  ],
+  "actions": [{"action": "escalate_ticket", "ticket_id": "3e34...", "priority_before": "P2", "priority_after": "P1"}],
+  "iterations": 4,
+  "stopped": "done",
+  "usage": {"input_tokens": 5120, "output_tokens": 410},
+  "model_provider": "bedrock",
+  "latency_ms": 6800
+}
+```
+
+Pass `"ticket_id"` too to ask about one ticket ("Look at this ticket and tell me what to do next").
+
+**Guardrails in code, not just the prompt** (`src/agent.py`):
+
+- Only the five listed tools can run, and every input is validated (bad IDs, unknown tools and failures go back to the model as errors instead of crashing).
+- The agent can add notes and escalate. It **can't close tickets or lower a priority**. A request to lower one is ignored.
+- At most **1 escalation and 3 notes per request**, so a bad loop can't spam on-call.
+- **PII is redacted** from the question and from every tool result before the model sees it.
+- Ticket text is treated as **data, not instructions** (prompt-injection defense).
+- **Step limit of 6.** If it's hit, the answer says a technician should review.
+- Every response includes the **full trace** (tools called, inputs, what changed) and token usage, so a human can audit it.
+- It works with Bedrock or the Anthropic API, and fails over between them like triage does.
+
+## Run it in Docker
+
+```bash
+docker build -t ai-ticket-triage .
+docker run --rm -p 8000:8000 ai-ticket-triage
+```
+
+That starts the API on `http://localhost:8000` with a fake model and a few demo tickets (three VPN tickets, so the agent has an outage to find). P1 alerts print in the container log instead of emailing.
+
+```bash
+curl -X POST localhost:8000/agent -H "Content-Type: application/json" -d '{"message": "Is there a VPN outage right now?"}'
+curl localhost:8000/tickets
+```
+
+To use real Claude, pass a provider and key: `docker run --rm -p 8000:8000 -e LLM_PROVIDER=anthropic -e ANTHROPIC_API_KEY ai-ticket-triage`.
+
+GitHub Actions (`.github/workflows/ci.yml`) runs the tests and evals, builds the image, and smoke-tests the running container on every push.
+
 ## Project layout
 
 | Path | What it is |
 |---|---|
 | `template.yaml` | AWS SAM template: every AWS resource, defined as code |
-| `src/app.py` | Lambda handlers for the two API routes |
+| `src/app.py` | Lambda handlers for the three API routes |
+| `src/agent.py` | Help desk agent: tools, guardrails and the tool-use loop |
+| `src/store.py` | Ticket storage: DynamoDB in AWS, in-memory for local and Docker |
+| `src/local_server.py` | Runs the API locally / in Docker without AWS |
+| `Dockerfile` | Container image for the local API |
 | `src/triage.py` | Prompt, output validation, guardrails |
 | `src/knowledge.py` | Loads articles from S3 and searches them (TF-IDF) |
 | `src/redact.py` | Removes personal data before the AI call |
-| `src/llm.py` | Bedrock Converse API client, Anthropic API client, provider failover, and a fake model for tests |
+| `src/llm.py` | Bedrock Converse API and Anthropic API clients (text and tool use), provider failover, and a fake model for tests |
 | `knowledge_base/` | Sample IT help desk articles |
-| `tests/` | 21 unit tests (no AWS needed) |
+| `tests/` | 45 unit tests (no AWS needed) |
 | `evals/` | 12 tickets with known answers to measure accuracy |
 
 ## Run it locally (no AWS account needed)
@@ -65,9 +133,10 @@ curl -X POST "$API_URL/tickets" -H "Content-Type: application/json" -d '{
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-python -m pytest -q                      # 21 tests
+python -m pytest -q                      # 45 tests
 python evals/run_evals.py                # accuracy with the fake model
 python scripts/local_demo.py "Locked out" "Too many password attempts"
+python src/local_server.py               # the full API on localhost:8000
 ```
 
 ## Deploy to AWS
@@ -107,7 +176,9 @@ read -s ANTHROPIC_KEY && aws ssm put-parameter --name /ai-ticket-triage/anthropi
 - **API throttling:** caps requests so nobody can run up a Bedrock bill.
 - **Provider failover:** by default the Lambda tries Claude on Bedrock first (one quick attempt, no long retry loop) and fails over to Claude through the Anthropic API if Bedrock is throttled or out of quota. Each ticket records which provider answered (`model_provider`). Set `LlmProvider` to `bedrock` or `anthropic` to use only one. The Anthropic API key is stored as an encrypted SecureString in SSM Parameter Store, and the Lambda role can read only that one parameter.
 - **Fail-safe:** if every model provider fails, the ticket is still saved and flagged for a human.
+- **Agent with limited powers:** triage is a single model call because that's all it needs. The agent is for open-ended questions that need several lookups. It gets read tools plus two narrow write tools, its own IAM role (GetItem, Scan and UpdateItem only, no delete), and hard caps enforced in Python.
+- **Recent-ticket search uses a DynamoDB Scan:** fine for a small table. At scale, add a GSI on `created_at` and Query it.
 
 ## Ideas for next steps
 
-Authentication on the API (Cognito / JWT), Bedrock Knowledge Bases for larger document sets, a small web UI on S3 + CloudFront, an SQS queue to buffer ticket spikes, and a CloudWatch dashboard for priority mix and latency.
+Authentication on the API (Cognito / JWT, especially for `/agent` since it can change tickets), Bedrock Knowledge Bases for larger document sets, a small web UI on S3 + CloudFront, an SQS queue to buffer ticket spikes, and a CloudWatch dashboard for priority mix and latency.

@@ -2,6 +2,7 @@
 
 POST /tickets              -> create_ticket: triage a new ticket and save it
 GET  /tickets/{ticket_id}  -> get_ticket:    look up a saved ticket
+POST /agent                -> agent:         ask the help desk agent a question (it uses tools)
 """
 import base64
 import json
@@ -11,9 +12,11 @@ import time
 import uuid
 from decimal import Decimal
 
+from agent import HelpDeskTools, run_agent
 from knowledge import KnowledgeBase, load_from_dir, load_from_s3
 from llm import build_llm
 from redact import redact
+from store import DynamoTicketStore
 from triage import triage_ticket
 
 logger = logging.getLogger()
@@ -21,6 +24,7 @@ logger.setLevel(logging.INFO)
 
 MAX_SUBJECT = 200
 MAX_DESCRIPTION = 5000
+MAX_QUESTION = 2000
 
 # Created once per Lambda container and reused on warm starts (faster, cheaper).
 _clients = {}
@@ -50,6 +54,8 @@ def _get(name):
                 articles = load_from_s3(os.environ["KB_BUCKET"], os.environ.get("KB_PREFIX", "kb/"),
                                         boto3.client("s3"))
             _clients[name] = KnowledgeBase(articles)
+        elif name == "store":
+            _clients[name] = DynamoTicketStore(_get("table"))
     return _clients[name]
 
 
@@ -141,6 +147,52 @@ def create_ticket(event, context):
                             "model_provider": model_provider,
                             "latency_ms": latency_ms, "redacted": redacted}))
     return _response(201, {k: v for k, v in item.items() if k != "description"})
+
+
+def _p1_alert(ticket_id: str, reason: str) -> None:
+    _get("sns").publish(
+        TopicArn=os.environ["ALERT_TOPIC_ARN"],
+        Subject="P1 escalated by help desk agent",
+        Message=f"Ticket {ticket_id} was escalated to P1.\nReason: {reason}",
+    )
+
+
+def agent(event, context):
+    try:
+        data = _parse_body(event)
+    except (ValueError, json.JSONDecodeError):
+        return _response(400, {"error": "Request body must be valid JSON."})
+
+    question = str(data.get("message", "")).strip()
+    ticket_id = str(data.get("ticket_id") or "").strip() or None
+    if not question:
+        return _response(400, {"error": "'message' is required."})
+    if len(question) > MAX_QUESTION:
+        return _response(400, {"error": f"Message max {MAX_QUESTION} chars."})
+    if ticket_id:
+        try:
+            ticket_id = str(uuid.UUID(ticket_id))
+        except ValueError:
+            return _response(400, {"error": "Invalid ticket_id."})
+
+    started = time.time()
+    llm = _get("llm")
+    tools = HelpDeskTools(_get("store"), _get("kb"), notifier=_p1_alert)
+    try:
+        result = run_agent(question, llm, tools, ticket_id=ticket_id)
+    except Exception:
+        # Every model provider failed. Report it plainly; nothing was half-changed silently.
+        logger.exception("Agent failed")
+        return _response(503, {"error": "The AI model is unavailable right now. Try again shortly.",
+                               "actions": tools.actions})
+    result["latency_ms"] = int((time.time() - started) * 1000)
+
+    logger.info(json.dumps({"event": "agent_run", "iterations": result["iterations"],
+                            "stopped": result["stopped"], "tools": [s["tool"] for s in result["steps"]],
+                            "actions": [a["action"] for a in result["actions"]],
+                            "model_provider": result["model_provider"], "usage": result["usage"],
+                            "latency_ms": result["latency_ms"]}))
+    return _response(200, result)
 
 
 def get_ticket(event, context):

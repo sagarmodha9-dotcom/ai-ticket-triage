@@ -118,6 +118,48 @@ Resources:
             Path: /tickets
             Method: POST
 
+  # The help desk agent: Claude picks tools (search KB, find similar tickets, add notes, escalate)
+  # in a loop. Timeout stays under API Gateway's 30-second limit; the loop is capped at 6 steps.
+  AgentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.agent
+      Timeout: 29
+      Environment:
+        Variables:
+          MODEL_ID: !Ref ModelId
+          LLM_PROVIDER: !Ref LlmProvider
+          ANTHROPIC_MODEL_ID: !Ref AnthropicModelId
+          ANTHROPIC_KEY_PARAM: !Ref AnthropicKeyParam
+          KB_BUCKET: !Ref KnowledgeBucket
+          KB_PREFIX: kb/
+          ALERT_TOPIC_ARN: !Ref P1AlertTopic
+      Policies:
+        # Read, scan and update tickets. The agent's code never deletes or closes them.
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:GetItem, dynamodb:Scan, dynamodb:UpdateItem]
+              Resource: !GetAtt TicketsTable.Arn
+            - Effect: Allow
+              Action: bedrock:InvokeModel
+              Resource:
+                - arn:aws:bedrock:*::foundation-model/*
+                - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AnthropicKeyParam}
+        - S3ReadPolicy:
+            BucketName: !Ref KnowledgeBucket
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt P1AlertTopic.TopicName
+      Events:
+        Agent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref TriageApi
+            Path: /agent
+            Method: POST
+
   GetTicketFunction:
     Type: AWS::Serverless::Function
     Properties:

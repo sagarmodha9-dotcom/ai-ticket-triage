@@ -5,3 +5,4 @@ __pycache__/
 samconfig.toml
 *.pyc
 .DS_Store
+.env

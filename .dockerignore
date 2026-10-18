@@ -1,0 +1,13 @@
+.git
+.github
+.aws-sam
+.venv
+.pytest_cache
+__pycache__
+*.pyc
+.env
+samconfig.toml
+tests
+evals
+scripts
+.DS_Store

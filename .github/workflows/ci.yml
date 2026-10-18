@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+      - name: Evals with the fake model
+        run: python evals/run_evals.py
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t ai-ticket-triage .
+      - name: Smoke test the running container
+        run: |
+          docker run -d --name app -p 8000:8000 ai-ticket-triage
+          for i in $(seq 1 20); do curl -sf localhost:8000/health && break; sleep 1; done
+          curl -sf -X POST localhost:8000/agent -H "Content-Type: application/json" \
+            -d '{"message": "Is there a VPN outage right now?"}' | tee out.json
+          grep -q '"stopped": "done"' out.json
+          docker logs app
