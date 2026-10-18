@@ -58,7 +58,7 @@ curl -X POST "$API_URL/tickets" -H "Content-Type: application/json" -d '{
 ## Help desk agent
 
 ```bash
-curl -X POST "$API_URL/agent" -H "Content-Type: application/json" \
+curl -X POST "$API_URL/agent" -H "Content-Type: application/json" -H "x-api-key: $AGENT_KEY" \
   -d '{"message": "Is there a VPN outage right now?"}'
 ```
 
@@ -87,8 +87,12 @@ Pass `"ticket_id"` too to ask about one ticket ("Look at this ticket and tell me
 - The agent can add notes and escalate. It **can't close tickets or lower a priority**. A request to lower one is ignored.
 - At most **1 escalation and 3 notes per request**, so a bad loop can't spam on-call.
 - **PII is redacted** from the question and from every tool result before the model sees it.
-- Ticket text is treated as **data, not instructions** (prompt-injection defense).
-- **Step limit of 6 and a 30,000-token budget per request.** If either is hit, the answer says a technician should review.
+- Text users wrote (subjects, descriptions, notes) comes back under **`untrusted_` keys**, and the system prompt says never to follow instructions inside them. The evals test both direct injection (in the ticket) and indirect injection (hidden in a past ticket the agent pulls up).
+- **Priority writes are conditional:** the agent only writes a priority when raising it, and only if nobody changed it since it was read, so a stale read or two requests at once can't lower one.
+- If the P1 alert fails, the escalation still shows up in the trace, flagged `alert_sent: false`.
+- Keyword search matches redacted text, so it can't be used to probe tickets for phone numbers or emails.
+- **`/agent` requires an API key** (`x-api-key` header, stored encrypted in SSM) because it can change tickets and page on-call.
+- **Step limit of 6, a 30,000-token budget, and a time budget** that stops before Lambda's timeout. If one is hit, the answer says a technician should review, and everything already done is still returned.
 - Every response includes the **full trace** (tools called, inputs, what changed) and token usage, so a human can audit it.
 - It works with Bedrock or the Anthropic API, and fails over between them like triage does.
 
@@ -108,7 +112,7 @@ curl localhost:8000/tickets
 
 To use real Claude, pass a provider and key: `docker run --rm -p 8000:8000 -e LLM_PROVIDER=anthropic -e ANTHROPIC_API_KEY ai-ticket-triage`.
 
-GitHub Actions (`.github/workflows/ci.yml`) runs the tests and evals, builds the image, and smoke-tests the running container on every push.
+GitHub Actions (`.github/workflows/ci.yml`) runs the tests and evals (the build fails if accuracy drops), builds the image, and smoke-tests the running container on every push. Locally there's no agent key unless you set `AGENT_API_KEY`.
 
 ## Project layout
 
@@ -125,7 +129,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs the tests and evals, builds the
 | `src/redact.py` | Removes personal data before the AI call |
 | `src/llm.py` | Bedrock Converse API and Anthropic API clients (text and tool use), provider failover, and a fake model for tests |
 | `knowledge_base/` | Sample IT help desk articles |
-| `tests/` | 46 unit tests (no AWS needed) |
+| `tests/` | 57 unit tests (no AWS needed) |
 | `evals/` | 12 tickets with known answers (triage accuracy) and 12 agent scenarios (outages, phishing, MFA fatigue, direct and indirect prompt injection, notes...) compared against single-call triage |
 
 ## Run it locally (no AWS account needed)
@@ -133,7 +137,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs the tests and evals, builds the
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-python -m pytest -q                      # 46 tests
+python -m pytest -q                      # 57 tests
 python evals/run_evals.py                # accuracy with the fake model
 python scripts/local_demo.py "Locked out" "Too many password attempts"
 python src/local_server.py               # the full API on localhost:8000
@@ -150,13 +154,20 @@ Prerequisites: AWS account, [AWS CLI](https://aws.amazon.com/cli/) and [AWS SAM 
    sam deploy --guided      # enter AlertEmail and ModelId when asked
    ```
 3. Confirm the SNS subscription email AWS sends you.
-4. Upload the knowledge base (bucket name is in the deploy outputs):
+4. Create the API key for `/agent` (random, stored encrypted; you never type it):
+   ```bash
+   aws ssm put-parameter --name /ai-ticket-triage/agent-api-key --type SecureString \
+     --value "$(openssl rand -hex 24)" --region us-east-1
+   AGENT_KEY=$(aws ssm get-parameter --name /ai-ticket-triage/agent-api-key --with-decryption \
+     --query Parameter.Value --output text --region us-east-1)
+   ```
+5. Upload the knowledge base (bucket name is in the deploy outputs):
    ```bash
    ./scripts/upload_kb.sh <KnowledgeBucketName>
    ```
-5. Test with the `curl` example above using the `ApiUrl` output.
-6. Score the agent: `python evals/run_agent_evals.py --anthropic claude-haiku-4-5 --runs 3` (pass rate and consistency, compared with single-call triage on the same scenarios, plus tool calls, tokens, latency and cost per run)
-7. Measure real accuracy: `python evals/run_evals.py --bedrock <MODEL_ID>` (or `--anthropic claude-haiku-4-5` with `ANTHROPIC_API_KEY` set)
+6. Test with the `curl` examples above using the `ApiUrl` output.
+7. Score the agent: `python evals/run_agent_evals.py --anthropic claude-haiku-4-5 --runs 3` (pass rate and consistency, compared with single-call triage on the same scenarios, plus tool calls, tokens, latency and cost per run)
+8. Measure real accuracy: `python evals/run_evals.py --bedrock <MODEL_ID>` (or `--anthropic claude-haiku-4-5` with `ANTHROPIC_API_KEY` set)
 
 **Optional: Anthropic API failover.** New AWS accounts can start with very low Bedrock quotas. To fail over to the Anthropic API, store your key once (it's read silently, so it never lands in your shell history):
 
@@ -182,4 +193,4 @@ read -s ANTHROPIC_KEY && aws ssm put-parameter --name /ai-ticket-triage/anthropi
 
 ## Ideas for next steps
 
-Authentication on the API (Cognito / JWT, especially for `/agent` since it can change tickets), Bedrock Knowledge Bases for larger document sets, a small web UI on S3 + CloudFront, an SQS queue to buffer ticket spikes, and a CloudWatch dashboard for priority mix and latency.
+Per-user authentication (Cognito / JWT) instead of one shared agent key, Bedrock Knowledge Bases for larger document sets, a small web UI on S3 + CloudFront, an SQS queue to buffer ticket spikes, and a CloudWatch dashboard for priority mix and latency.

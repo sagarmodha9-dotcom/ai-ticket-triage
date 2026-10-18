@@ -237,6 +237,8 @@ def main():
     parser.add_argument("--bedrock", metavar="MODEL_ID")
     parser.add_argument("--anthropic", metavar="MODEL_ID")
     parser.add_argument("--runs", type=int, default=1, help="repeat each scenario N times")
+    parser.add_argument("--min-pass-rate", type=float, default=0.0,
+                        help="exit with an error if the agent pass rate is below this (0-1)")
     args = parser.parse_args()
     if args.anthropic:
         llm = AnthropicLLM(args.anthropic, os.environ.get("ANTHROPIC_API_KEY", ""), timeout=60)
@@ -316,6 +318,9 @@ def main():
     print(f"  Single-call triage            {0:5.1f}      {base['in'] / bn:7,.0f} / {base['out'] / bn:5,.0f}"
           f"   {base['secs'] / bn:5.1f}s   ${cost(base['in'], base['out']) / bn:.4f}")
     print("(cost estimated at Claude Haiku 4.5 list price)")
+    if agent["passes"] / n < args.min_pass_rate:
+        print(f"FAILED: pass rate below the {args.min_pass_rate:.0%} minimum")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

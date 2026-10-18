@@ -19,7 +19,11 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: python -m pytest -q
       - name: Evals with the fake model
-        run: python evals/run_evals.py && python evals/run_agent_evals.py
+        # The fake model is keyword rules, so it can't pass the judgment scenarios (phishing,
+        # paraphrased outages, note requests). These floors catch regressions in the pipeline.
+        run: |
+          python evals/run_evals.py --min-accuracy 1.0
+          python evals/run_agent_evals.py --min-pass-rate 0.6
 
   docker:
     runs-on: ubuntu-latest
@@ -35,4 +39,6 @@ jobs:
           curl -sf -X POST localhost:8000/agent -H "Content-Type: application/json" \
             -d '{"message": "Is there a VPN outage right now?"}' | tee out.json
           grep -q '"stopped": "done"' out.json
-          docker logs app
+      - name: Container logs
+        if: always()
+        run: docker logs app || true

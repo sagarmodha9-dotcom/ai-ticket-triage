@@ -23,6 +23,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--bedrock", metavar="MODEL_ID", help="call the real model in Bedrock")
     parser.add_argument("--anthropic", metavar="MODEL_ID", help="call Claude via the Anthropic API (needs ANTHROPIC_API_KEY)")
+    parser.add_argument("--min-accuracy", type=float, default=0.0,
+                        help="exit with an error if priority or category accuracy is below this (0-1)")
     args = parser.parse_args()
 
     if args.anthropic:
@@ -53,6 +55,9 @@ def main():
     n = len(cases)
     print(f"\nPriority accuracy: {priority_ok}/{n} ({priority_ok / n:.0%})")
     print(f"Category accuracy: {category_ok}/{n} ({category_ok / n:.0%})")
+    if min(priority_ok, category_ok) / n < args.min_accuracy:
+        print(f"FAILED: accuracy below the {args.min_accuracy:.0%} minimum")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

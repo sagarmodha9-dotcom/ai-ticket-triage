@@ -26,6 +26,12 @@ Parameters:
     Type: String
     Description: SSM Parameter Store name (SecureString) that holds the Anthropic API key.
     Default: /ai-ticket-triage/anthropic-api-key
+  AgentKeyParam:
+    Type: String
+    Description: >
+      SSM Parameter Store name (SecureString) holding the API key callers must send as the
+      x-api-key header to use POST /agent. The agent can change tickets, so it is never open.
+    Default: /ai-ticket-triage/agent-api-key
   AlertEmail:
     Type: String
     Description: Email address that receives P1 alerts (you must confirm the subscription email).
@@ -131,6 +137,7 @@ Resources:
           LLM_PROVIDER: !Ref LlmProvider
           ANTHROPIC_MODEL_ID: !Ref AnthropicModelId
           ANTHROPIC_KEY_PARAM: !Ref AnthropicKeyParam
+          AGENT_KEY_PARAM: !Ref AgentKeyParam
           KB_BUCKET: !Ref KnowledgeBucket
           KB_PREFIX: kb/
           ALERT_TOPIC_ARN: !Ref P1AlertTopic
@@ -147,7 +154,9 @@ Resources:
                 - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*
             - Effect: Allow
               Action: ssm:GetParameter
-              Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AnthropicKeyParam}
+              Resource:
+                - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AnthropicKeyParam}
+                - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AgentKeyParam}
         - S3ReadPolicy:
             BucketName: !Ref KnowledgeBucket
         - SNSPublishMessagePolicy:

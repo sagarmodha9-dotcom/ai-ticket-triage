@@ -35,14 +35,14 @@ def _usage(input_tokens=0, output_tokens=0) -> dict:
 class BedrockLLM:
     provider = "bedrock"
 
-    def __init__(self, model_id: str, client=None, max_attempts: int | None = None):
+    def __init__(self, model_id: str, client=None, max_attempts: int | None = None, read_timeout: int = 15):
         self.model_id = model_id
         if client is None:
             import boto3  # only needed when actually calling AWS
-            config = None
-            if max_attempts is not None:
-                from botocore.config import Config
-                config = Config(retries={"max_attempts": max_attempts, "mode": "standard"})
+            from botocore.config import Config
+            # botocore's default read timeout is 60s, longer than API Gateway's 30s limit.
+            config = Config(connect_timeout=3, read_timeout=read_timeout,
+                            retries={"max_attempts": max_attempts or 3, "mode": "standard"})
             client = boto3.client("bedrock-runtime", config=config)
         self.client = client
 
@@ -104,7 +104,7 @@ class AnthropicLLM:
     provider = "anthropic"
     URL = "https://api.anthropic.com/v1/messages"
 
-    def __init__(self, model_id: str, api_key: str, opener=urllib.request.urlopen, timeout: int = 20):
+    def __init__(self, model_id: str, api_key: str, opener=urllib.request.urlopen, timeout: int = 15):
         if not api_key:
             raise ValueError("Anthropic API key is missing")
         self.model_id = model_id
@@ -276,7 +276,7 @@ class FakeLLM:
         if ticket_match and "get_ticket" not in done:
             return call("get_ticket", {"ticket_id": ticket_match.group(0)})
         if not topic and "get_ticket" in done:
-            subject = str(done["get_ticket"].get("subject", "")).lower()
+            subject = str(done["get_ticket"].get("untrusted_ticket_text", {}).get("subject", "")).lower()
             topic = next((t for t in self.TOPICS if t in subject), None)
         if topic and "search_recent_tickets" not in done:
             return call("search_recent_tickets", {"keyword": topic, "hours": 24})

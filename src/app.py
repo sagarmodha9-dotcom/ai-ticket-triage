@@ -5,6 +5,7 @@ GET  /tickets/{ticket_id}  -> get_ticket:    look up a saved ticket
 POST /agent                -> agent:         ask the help desk agent a question (it uses tools)
 """
 import base64
+import hmac
 import json
 import logging
 import os
@@ -42,8 +43,14 @@ def _get(name):
             api_key = ""
             if provider != "bedrock":
                 # The key lives encrypted in SSM Parameter Store, never in code or env vars.
-                api_key = boto3.client("ssm").get_parameter(
-                    Name=os.environ["ANTHROPIC_KEY_PARAM"], WithDecryption=True)["Parameter"]["Value"]
+                try:
+                    api_key = _ssm_secret(os.environ["ANTHROPIC_KEY_PARAM"])
+                except Exception:
+                    if provider != "bedrock_with_anthropic_fallback":
+                        raise
+                    # No Anthropic key stored: run on Bedrock alone instead of failing every request.
+                    logger.warning("Anthropic key not found in SSM; using Bedrock only (no failover)")
+                    provider = "bedrock"
             _clients[name] = build_llm(provider, os.environ.get("MODEL_ID", ""),
                                        os.environ.get("ANTHROPIC_MODEL_ID", ""), api_key)
         elif name == "kb":
@@ -57,6 +64,20 @@ def _get(name):
         elif name == "store":
             _clients[name] = DynamoTicketStore(_get("table"))
     return _clients[name]
+
+
+def _ssm_secret(parameter_name: str) -> str:
+    import boto3
+    return boto3.client("ssm").get_parameter(Name=parameter_name, WithDecryption=True)["Parameter"]["Value"]
+
+
+def _agent_api_key() -> str | None:
+    """The shared key callers must send in the x-api-key header to use /agent.
+    In AWS it's read from SSM; locally it can come from AGENT_API_KEY; no key = no auth (local only)."""
+    if "agent_api_key" not in _clients:
+        param = os.environ.get("AGENT_KEY_PARAM")
+        _clients["agent_api_key"] = _ssm_secret(param) if param else os.environ.get("AGENT_API_KEY") or None
+    return _clients["agent_api_key"]
 
 
 def _response(status: int, body: dict) -> dict:
@@ -158,6 +179,17 @@ def _p1_alert(ticket_id: str, reason: str) -> None:
 
 
 def agent(event, context):
+    # /agent can change tickets and page on-call, so it requires an API key (sent as x-api-key).
+    try:
+        expected_key = _agent_api_key()
+    except Exception:
+        logger.exception("Agent API key not available")
+        return _response(503, {"error": "Agent is not configured (API key missing)."})
+    if expected_key:
+        headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
+        if not hmac.compare_digest(str(headers.get("x-api-key", "")), expected_key):
+            return _response(401, {"error": "Missing or invalid x-api-key header."})
+
     try:
         data = _parse_body(event)
     except (ValueError, json.JSONDecodeError):
@@ -176,15 +208,18 @@ def agent(event, context):
             return _response(400, {"error": "Invalid ticket_id."})
 
     started = time.time()
-    llm = _get("llm")
-    tools = HelpDeskTools(_get("store"), _get("kb"), notifier=_p1_alert)
+    tools = None
+    # Leave a few seconds before Lambda's timeout so we can always return the trace.
+    time_left = (lambda: context.get_remaining_time_in_millis() / 1000 - 3) if context else None
     try:
-        result = run_agent(question, llm, tools, ticket_id=ticket_id)
+        llm = _get("llm")
+        tools = HelpDeskTools(_get("store"), _get("kb"), notifier=_p1_alert)
+        result = run_agent(question, llm, tools, ticket_id=ticket_id, time_left=time_left)
     except Exception:
-        # Every model provider failed. Report it plainly; nothing was half-changed silently.
+        # Setup failed or every model provider failed. Return what was already done, if anything.
         logger.exception("Agent failed")
         return _response(503, {"error": "The AI model is unavailable right now. Try again shortly.",
-                               "actions": tools.actions})
+                               "actions": tools.actions if tools else []})
     result["latency_ms"] = int((time.time() - started) * 1000)
 
     logger.info(json.dumps({"event": "agent_run", "iterations": result["iterations"],

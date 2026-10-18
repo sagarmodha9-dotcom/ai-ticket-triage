@@ -106,7 +106,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0].rstrip("/")
-        event = {"body": self._body()}
+        event = {"body": self._body(), "headers": dict(self.headers.items())}
         if path == "/tickets":
             return self._send(app.create_ticket(event, None))
         if path == "/agent":
