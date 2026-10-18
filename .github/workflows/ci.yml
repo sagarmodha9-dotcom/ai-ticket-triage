@@ -19,7 +19,7 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: python -m pytest -q
       - name: Evals with the fake model
-        run: python evals/run_evals.py
+        run: python evals/run_evals.py && python evals/run_agent_evals.py
 
   docker:
     runs-on: ubuntu-latest

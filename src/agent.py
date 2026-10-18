@@ -15,7 +15,8 @@ Safety rules live in code, not just in the prompt, so the model can't talk its w
   - At most one escalation and three notes per request, so a bad loop can't spam alerts.
   - Personal data is redacted from the question and from every tool result before the model sees it.
   - Ticket text is marked as data, so instructions hidden inside a ticket (prompt injection) are ignored.
-  - A hard step limit stops runaway loops; if it is hit, the answer says a human should review.
+  - A hard step limit and a token budget stop runaway loops; if either is hit, the answer says
+    a human should review.
 """
 import json
 import logging
@@ -27,6 +28,7 @@ from redact import redact
 logger = logging.getLogger(__name__)
 
 MAX_STEPS = 6
+MAX_TOKENS_PER_RUN = 30_000  # input + output across the whole loop (about $0.04 on Claude Haiku 4.5)
 MAX_ESCALATIONS = 1
 MAX_NOTES = 3
 PRIORITY_RANK = {"P1": 1, "P2": 2, "P3": 3, "P4": 4}
@@ -245,7 +247,7 @@ class HelpDeskTools:
 
 
 def run_agent(question: str, llm, tools: HelpDeskTools, ticket_id: str | None = None,
-              max_steps: int = MAX_STEPS) -> dict:
+              max_steps: int = MAX_STEPS, max_tokens: int = MAX_TOKENS_PER_RUN) -> dict:
     """Answer a technician's question, using tools as needed. Returns the answer plus a full trace."""
     clean_question, redacted = redact(question)
     if ticket_id:
@@ -259,6 +261,9 @@ def run_agent(question: str, llm, tools: HelpDeskTools, ticket_id: str | None = 
             usage[key] += reply.get("usage", {}).get(key, 0)
         messages.append({"role": "assistant", "content": reply["content"]})
         calls = [b for b in reply["content"] if b["type"] == "tool_use"]
+        if calls and usage["input_tokens"] + usage["output_tokens"] > max_tokens:
+            return _result("I hit my token budget before finishing. A technician should review this.",
+                           steps, tools, usage, step, "token_budget", redacted, llm)
         if not calls:
             answer = " ".join(b["text"] for b in reply["content"] if b["type"] == "text").strip()
             return _result(answer or "No answer was produced. A technician should review.",

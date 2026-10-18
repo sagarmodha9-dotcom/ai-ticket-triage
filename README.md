@@ -88,7 +88,7 @@ Pass `"ticket_id"` too to ask about one ticket ("Look at this ticket and tell me
 - At most **1 escalation and 3 notes per request**, so a bad loop can't spam on-call.
 - **PII is redacted** from the question and from every tool result before the model sees it.
 - Ticket text is treated as **data, not instructions** (prompt-injection defense).
-- **Step limit of 6.** If it's hit, the answer says a technician should review.
+- **Step limit of 6 and a 30,000-token budget per request.** If either is hit, the answer says a technician should review.
 - Every response includes the **full trace** (tools called, inputs, what changed) and token usage, so a human can audit it.
 - It works with Bedrock or the Anthropic API, and fails over between them like triage does.
 
@@ -125,15 +125,15 @@ GitHub Actions (`.github/workflows/ci.yml`) runs the tests and evals, builds the
 | `src/redact.py` | Removes personal data before the AI call |
 | `src/llm.py` | Bedrock Converse API and Anthropic API clients (text and tool use), provider failover, and a fake model for tests |
 | `knowledge_base/` | Sample IT help desk articles |
-| `tests/` | 45 unit tests (no AWS needed) |
-| `evals/` | 12 tickets with known answers to measure accuracy |
+| `tests/` | 46 unit tests (no AWS needed) |
+| `evals/` | 12 tickets with known answers (triage accuracy) and 8 agent scenarios (outage, phishing, prompt injection, notes...) |
 
 ## Run it locally (no AWS account needed)
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-python -m pytest -q                      # 45 tests
+python -m pytest -q                      # 46 tests
 python evals/run_evals.py                # accuracy with the fake model
 python scripts/local_demo.py "Locked out" "Too many password attempts"
 python src/local_server.py               # the full API on localhost:8000
@@ -155,7 +155,8 @@ Prerequisites: AWS account, [AWS CLI](https://aws.amazon.com/cli/) and [AWS SAM 
    ./scripts/upload_kb.sh <KnowledgeBucketName>
    ```
 5. Test with the `curl` example above using the `ApiUrl` output.
-6. Measure real accuracy: `python evals/run_evals.py --bedrock <MODEL_ID>` (or `--anthropic claude-haiku-4-5` with `ANTHROPIC_API_KEY` set)
+6. Score the agent: `python evals/run_agent_evals.py --anthropic claude-haiku-4-5` (pass rate, tool calls, tokens, latency and cost per run)
+7. Measure real accuracy: `python evals/run_evals.py --bedrock <MODEL_ID>` (or `--anthropic claude-haiku-4-5` with `ANTHROPIC_API_KEY` set)
 
 **Optional: Anthropic API failover.** New AWS accounts can start with very low Bedrock quotas. To fail over to the Anthropic API, store your key once (it's read silently, so it never lands in your shell history):
 

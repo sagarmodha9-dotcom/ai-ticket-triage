@@ -75,6 +75,13 @@ def test_step_limit_stops_runaway_loop(setup):
     assert len(result["steps"]) == MAX_STEPS
 
 
+def test_token_budget_stops_expensive_loop(setup):
+    _, tools, _ = setup
+    llm = ScriptedLLM([use("search_knowledge_base", {"query": "vpn"}, f"t{i}") for i in range(MAX_STEPS)])
+    result = run_agent("loop", llm, tools, max_tokens=25)  # each scripted turn uses 15 tokens
+    assert result["stopped"] == "token_budget" and len(result["steps"]) == 1
+
+
 def test_unknown_tool_and_bad_input_return_errors_not_crashes(setup):
     _, tools, _ = setup
     llm = ScriptedLLM([use("delete_all_tickets", {}), use("get_ticket", {"ticket_id": "abc"}, "t2"), text("ok")])
