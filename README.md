@@ -8,7 +8,7 @@ A serverless help desk assistant on AWS. When a support ticket comes in, it:
 4. **Checks the AI's answer** with plain-code guardrails: valid values only, no made-up sources, security tickets always escalated, low-confidence answers flagged for a human
 5. **Saves the ticket** in DynamoDB and **emails an alert** through SNS when it's a P1
 
-It also has a **help desk agent** (`POST /agent`). A technician asks a question in plain English and Claude decides which tools to use, step by step: search the knowledge base, look up a ticket, find similar recent tickets, add a note, or escalate. For example, it spots an outage when several users report the same problem, escalates the newest ticket to P1, and alerts on-call.
+It also has a **help desk agent** (`POST /agent`), which scored **95% vs 57%** against single-call triage on the same scenarios ([results](#results)). A technician asks a question in plain English and Claude decides which tools to use, step by step: search the knowledge base, look up a ticket, find similar recent tickets, add a note, or escalate. For example, it spots an outage when several users report the same problem, escalates the newest ticket to P1, and alerts on-call.
 
 The whole API also runs in **Docker** with one command, no AWS account needed.
 
@@ -95,6 +95,39 @@ Pass `"ticket_id"` too to ask about one ticket ("Look at this ticket and tell me
 - **Step limit of 6, a 30,000-token budget, and a time budget** that stops before Lambda's timeout. If one is hit, the answer says a technician should review, and everything already done is still returned.
 - Every response includes the **full trace** (tools called, inputs, what changed) and token usage, so a human can audit it.
 - It works with Bedrock or the Anthropic API, and fails over between them like triage does.
+
+## Results
+
+Measured with real Claude (Claude Haiku 4.5 via the Anthropic API) on Oct 18, 2026.
+
+**Help desk agent vs single-call triage** (`evals/run_agent_evals.py`, 12 scenarios × 3 runs each):
+
+| | Agent | Single-call triage |
+|---|---|---|
+| Scenarios both can attempt (7 × 3 runs) | **20/21 (95%)** | 12/21 (57%) |
+| All agent scenarios (12 × 3 runs) | **35/36 (97%)** | n/a |
+| Tool calls per run | 1.9 | 0 |
+| Latency per run | 4.2 s | 2.1 s |
+| Cost per run (Haiku 4.5 list price) | ~$0.0055 | ~$0.0017 |
+
+Single-call triage only sees one ticket, so it scored 0/3 on every scenario that needs looking across tickets: a VPN outage, the same outage described in different words, and an MFA-fatigue attack. The agent caught all three. It also passed both prompt-injection tests 3/3: instructions inside the ticket, and instructions hidden in a past ticket it pulled up during a search.
+
+The trade-off: about 3× the cost and 2× the latency of a single call, still well under a cent per run.
+
+**Known failure:** in the simple VPN outage scenario, the agent correctly said "there appears to be a VPN outage" in all 3 runs, but in 1 of 3 it didn't escalate the ticket. Next step: make the escalation rule more explicit in the prompt and track this scenario's consistency over more runs.
+
+**Single-call triage accuracy** (`evals/run_evals.py`, 12 tickets): 100% priority, 92% category.
+
+**Live deployment:** the deployed `/agent` endpoint found three VPN tickets, escalated the newest to P1, and sent the on-call alert email. Bedrock was throttled on this account, so the call failed over to the Anthropic API automatically.
+
+Reproduce (about $0.25 in API calls):
+
+```bash
+ANTHROPIC_API_KEY=... python evals/run_agent_evals.py --anthropic claude-haiku-4-5 --runs 3
+ANTHROPIC_API_KEY=... python evals/run_evals.py --anthropic claude-haiku-4-5
+```
+
+The evals check what the agent *did* (which tools it called, what it changed in the tickets), not how its answer sounds, so the score means the same thing every run. CI also runs both evals with a fake model on every push and fails the build if they drop below a floor.
 
 ## Run it in Docker
 
